@@ -53,7 +53,6 @@ goto select-target
 if not defined VS90COMNTOOLS goto vc-set-notfound
 if not exist "%VS90COMNTOOLS%\..\..\vc\vcvarsall.bat" goto vc-set-notfound
 call "%VS90COMNTOOLS%\..\..\vc\vcvarsall.bat" %vs_toolset%
-echo Warning: building with Visual Studio 2008 is currently not supported.
 set GYP_MSVS_VERSION=2008
 goto select-target
 
@@ -72,13 +71,13 @@ if defined noprojgen goto msbuild
 
 @rem Generate the VS project.
 if exist build\gyp goto have_gyp
-echo svn co http://gyp.googlecode.com/svn/trunk@983 build/gyp
-svn co http://gyp.googlecode.com/svn/trunk@983 build/gyp
+echo git clone https://git.chromium.org/external/gyp.git build/gyp
+git clone https://git.chromium.org/external/gyp.git build/gyp
 if errorlevel 1 goto gyp_install_failed
 goto have_gyp
 
 :gyp_install_failed
-echo Failed to download gyp. Make sure you have subversion installed, or
+echo Failed to download gyp. Make sure you have git installed, or
 echo manually install gyp into %~dp0build\gyp.
 goto exit
 

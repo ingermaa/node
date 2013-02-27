@@ -119,6 +119,22 @@ static void crypto_lock_cb(int mode, int n, const char* file, int line) {
 }
 
 
+Handle<Value> ThrowCryptoErrorHelper(unsigned long err, bool is_type_error) {
+  HandleScope scope;
+  char errmsg[128];
+  ERR_error_string_n(err, errmsg, sizeof(errmsg));
+  return is_type_error ? ThrowTypeError(errmsg) : ThrowError(errmsg);
+}
+
+
+Handle<Value> ThrowCryptoError(unsigned long err) {
+  return ThrowCryptoErrorHelper(err, false);
+}
+
+
+Handle<Value> ThrowCryptoTypeError(unsigned long err) {
+  return ThrowCryptoErrorHelper(err, true);
+}
 
 
 void SecureContext::Initialize(Handle<Object> target) {
@@ -347,9 +363,7 @@ Handle<Value> SecureContext::SetKey(const Arguments& args) {
       return ThrowException(Exception::Error(
           String::New("PEM_read_bio_PrivateKey")));
     }
-    char string[120];
-    ERR_error_string_n(err, string, sizeof string);
-    return ThrowException(Exception::Error(String::New(string)));
+    return ThrowCryptoError(err);
   }
 
   SSL_CTX_use_PrivateKey(sc->ctx_, key);
@@ -449,9 +463,7 @@ Handle<Value> SecureContext::SetCert(const Arguments& args) {
       return ThrowException(Exception::Error(
           String::New("SSL_CTX_use_certificate_chain")));
     }
-    char string[120];
-    ERR_error_string_n(err, string, sizeof string);
-    return ThrowException(Exception::Error(String::New(string)));
+    return ThrowCryptoError(err);
   }
 
   return True();
@@ -580,13 +592,11 @@ Handle<Value> SecureContext::SetOptions(const Arguments& args) {
 
   SecureContext *sc = ObjectWrap::Unwrap<SecureContext>(args.Holder());
 
-  if (args.Length() != 1 || !args[0]->IsUint32()) {
+  if (args.Length() != 1 || !args[0]->IntegerValue()) {
     return ThrowException(Exception::TypeError(String::New("Bad parameter")));
   }
 
-  unsigned int opts = args[0]->Uint32Value();
-
-  SSL_CTX_set_options(sc->ctx_, opts);
+  SSL_CTX_set_options(sc->ctx_, args[0]->IntegerValue());
 
   return True();
 }
@@ -890,8 +900,9 @@ int Connection::HandleBIOError(BIO *bio, const char* func, int rv) {
 }
 
 
-int Connection::HandleSSLError(const char* func, int rv) {
-  if (rv >= 0) return rv;
+int Connection::HandleSSLError(const char* func, int rv, ZeroStatus zs) {
+  if (rv > 0) return rv;
+  if ((rv == 0) && (zs == kZeroIsNotAnError)) return rv;
 
   int err = SSL_get_error(ssl_, rv);
 
@@ -1348,17 +1359,17 @@ Handle<Value> Connection::ClearOut(const Arguments& args) {
 
     if (ss->is_server_) {
       rv = SSL_accept(ss->ssl_);
-      ss->HandleSSLError("SSL_accept:ClearOut", rv);
+      ss->HandleSSLError("SSL_accept:ClearOut", rv, kZeroIsAnError);
     } else {
       rv = SSL_connect(ss->ssl_);
-      ss->HandleSSLError("SSL_connect:ClearOut", rv);
+      ss->HandleSSLError("SSL_connect:ClearOut", rv, kZeroIsAnError);
     }
 
     if (rv < 0) return scope.Close(Integer::New(rv));
   }
 
   int bytes_read = SSL_read(ss->ssl_, buffer_data + off, len);
-  ss->HandleSSLError("SSL_read:ClearOut", bytes_read);
+  ss->HandleSSLError("SSL_read:ClearOut", bytes_read, kZeroIsNotAnError);
   ss->SetShutdownFlags();
 
   return scope.Close(Integer::New(bytes_read));
@@ -1458,10 +1469,10 @@ Handle<Value> Connection::ClearIn(const Arguments& args) {
     int rv;
     if (ss->is_server_) {
       rv = SSL_accept(ss->ssl_);
-      ss->HandleSSLError("SSL_accept:ClearIn", rv);
+      ss->HandleSSLError("SSL_accept:ClearIn", rv, kZeroIsAnError);
     } else {
       rv = SSL_connect(ss->ssl_);
-      ss->HandleSSLError("SSL_connect:ClearIn", rv);
+      ss->HandleSSLError("SSL_connect:ClearIn", rv, kZeroIsAnError);
     }
 
     if (rv < 0) return scope.Close(Integer::New(rv));
@@ -1469,7 +1480,7 @@ Handle<Value> Connection::ClearIn(const Arguments& args) {
 
   int bytes_written = SSL_write(ss->ssl_, buffer_data + off, len);
 
-  ss->HandleSSLError("SSL_write:ClearIn", bytes_written);
+  ss->HandleSSLError("SSL_write:ClearIn", bytes_written, kZeroIsAnError);
   ss->SetShutdownFlags();
 
   return scope.Close(Integer::New(bytes_written));
@@ -1531,6 +1542,15 @@ Handle<Value> Connection::GetPeerCertificate(const Arguments& args) {
         BIO_get_mem_ptr(bio, &mem);
         info->Set(exponent_symbol, String::New(mem->data, mem->length) );
         (void) BIO_reset(bio);
+    }
+
+    if (pkey != NULL) {
+      EVP_PKEY_free(pkey);
+      pkey = NULL;
+    }
+    if (rsa != NULL) {
+      RSA_free(rsa);
+      rsa = NULL;
     }
 
     ASN1_TIME_print(bio, X509_get_notBefore(peer_cert));
@@ -1683,8 +1703,11 @@ Handle<Value> Connection::IsSessionReused(const Arguments& args) {
 
   Connection *ss = Connection::Unwrap(args);
 
-  if (ss->ssl_ == NULL) return False();
-  return SSL_session_reused(ss->ssl_) ? True() : False();
+  if (ss->ssl_ == NULL || SSL_session_reused(ss->ssl_) == false) {
+    return False();
+  }
+
+  return True();
 }
 
 
@@ -1697,10 +1720,10 @@ Handle<Value> Connection::Start(const Arguments& args) {
     int rv;
     if (ss->is_server_) {
       rv = SSL_accept(ss->ssl_);
-      ss->HandleSSLError("SSL_accept:Start", rv);
+      ss->HandleSSLError("SSL_accept:Start", rv, kZeroIsAnError);
     } else {
       rv = SSL_connect(ss->ssl_);
-      ss->HandleSSLError("SSL_connect:Start", rv);
+      ss->HandleSSLError("SSL_connect:Start", rv, kZeroIsAnError);
     }
 
     return scope.Close(Integer::New(rv));
@@ -1717,8 +1740,7 @@ Handle<Value> Connection::Shutdown(const Arguments& args) {
 
   if (ss->ssl_ == NULL) return False();
   int rv = SSL_shutdown(ss->ssl_);
-
-  ss->HandleSSLError("SSL_shutdown", rv);
+  ss->HandleSSLError("SSL_shutdown", rv, kZeroIsNotAnError);
   ss->SetShutdownFlags();
 
   return scope.Close(Integer::New(rv));
@@ -1744,8 +1766,11 @@ Handle<Value> Connection::IsInitFinished(const Arguments& args) {
 
   Connection *ss = Connection::Unwrap(args);
 
-  if (ss->ssl_ == NULL) return False();
-  return SSL_is_init_finished(ss->ssl_) ? True() : False();
+  if (ss->ssl_ == NULL || SSL_is_init_finished(ss->ssl_) == false) {
+    return False();
+  }
+
+  return True();
 }
 
 
@@ -2081,9 +2106,7 @@ class Cipher : public ObjectWrap {
     if (!initialised_) return 0;
     *out_len=len+EVP_CIPHER_CTX_block_size(&ctx);
     *out= new unsigned char[*out_len];
-
-    EVP_CipherUpdate(&ctx, *out, out_len, (unsigned char*)data, len);
-    return 1;
+    return EVP_CipherUpdate(&ctx, *out, out_len, (unsigned char*)data, len);
   }
 
   int SetAutoPadding(bool auto_padding) {
@@ -2142,9 +2165,7 @@ class Cipher : public ObjectWrap {
 
     delete [] key_buf;
 
-    if (!r) {
-      return ThrowException(Exception::Error(String::New("CipherInit error")));
-    }
+    if (!r) return ThrowCryptoError(ERR_get_error());
 
     return args.This();
   }
@@ -2196,9 +2217,7 @@ class Cipher : public ObjectWrap {
     delete [] key_buf;
     delete [] iv_buf;
 
-    if (!r) {
-      return ThrowException(Exception::Error(String::New("CipherInitIv error")));
-    }
+    if (!r) return ThrowCryptoError(ERR_get_error());
 
     return args.This();
   }
@@ -2217,10 +2236,9 @@ class Cipher : public ObjectWrap {
 
     r = cipher->CipherUpdate(buffer_data, buffer_length, &out, &out_len);
 
-    if (!r) {
+    if (r == 0) {
       delete [] out;
-      Local<Value> exception = Exception::TypeError(String::New("DecipherUpdate fail"));
-      return ThrowException(exception);
+      return ThrowCryptoTypeError(ERR_get_error());
     }
 
     Local<Value> outString;
@@ -2258,11 +2276,7 @@ class Cipher : public ObjectWrap {
       // out_value always get allocated.
       delete[] out_value;
       out_value = NULL;
-      if (r == 0) {
-        Local<Value> exception = Exception::TypeError(
-          String::New("CipherFinal fail"));
-        return ThrowException(exception);
-      }
+      if (r == 0) return ThrowCryptoTypeError(ERR_get_error());
     }
 
     outString = Encode(out_value, out_len, BUFFER);
@@ -2386,8 +2400,7 @@ class Decipher : public ObjectWrap {
     *out_len=len+EVP_CIPHER_CTX_block_size(&ctx);
     *out= new unsigned char[*out_len];
 
-    EVP_CipherUpdate(&ctx, *out, out_len, (unsigned char*)data, len);
-    return 1;
+    return EVP_CipherUpdate(&ctx, *out, out_len, (unsigned char*)data, len);
   }
 
   int SetAutoPadding(bool auto_padding) {
@@ -2537,8 +2550,7 @@ class Decipher : public ObjectWrap {
 
     if (!r) {
       delete [] out;
-      Local<Value> exception = Exception::TypeError(String::New("DecipherUpdate fail"));
-      return ThrowException(exception);
+      return ThrowCryptoTypeError(ERR_get_error());
     }
 
     Local<Value> outString;
@@ -2577,11 +2589,7 @@ class Decipher : public ObjectWrap {
     if (out_len == 0 || r == 0) {
       delete [] out_value; // allocated even if out_len == 0
       out_value = NULL;
-      if (r == 0) {
-        Local<Value> exception = Exception::TypeError(
-          String::New("DecipherFinal fail"));
-        return ThrowException(exception);
-      }
+      if (r == 0) return ThrowCryptoTypeError(ERR_get_error());
     }
 
     outString = Encode(out_value, out_len, BUFFER);
@@ -2632,7 +2640,11 @@ class Hmac : public ObjectWrap {
       return false;
     }
     HMAC_CTX_init(&ctx);
-    HMAC_Init(&ctx, key, key_len, md);
+    if (key_len == 0) {
+      HMAC_Init(&ctx, "", 0, md);
+    } else {
+      HMAC_Init(&ctx, key, key_len, md);
+    }
     initialised_ = true;
     return true;
 
@@ -3721,9 +3733,9 @@ void EIO_PBKDF2After(pbkdf2_req* req, Local<Value> argv[2]) {
 }
 
 
-void EIO_PBKDF2After(uv_work_t* work_req) {
+void EIO_PBKDF2After(uv_work_t* work_req, int status) {
+  assert(status == 0);
   pbkdf2_req* req = container_of(work_req, pbkdf2_req, work_req);
-
   HandleScope scope;
   Local<Value> argv[2];
   Persistent<Object> obj = req->obj;
@@ -3895,16 +3907,15 @@ void RandomBytesCheck(RandomBytesRequest* req, Local<Value> argv[2]) {
 }
 
 
-void RandomBytesAfter(uv_work_t* work_req) {
+void RandomBytesAfter(uv_work_t* work_req, int status) {
+  assert(status == 0);
   RandomBytesRequest* req = container_of(work_req,
                                          RandomBytesRequest,
                                          work_req_);
-
   HandleScope scope;
   Local<Value> argv[2];
   RandomBytesCheck(req, argv);
   MakeCallback(req->obj_, "ondone", ARRAY_SIZE(argv), argv);
-
   delete req;
 }
 
