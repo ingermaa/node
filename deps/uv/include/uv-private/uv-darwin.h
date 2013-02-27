@@ -26,8 +26,13 @@
 # include <mach/mach.h>
 # include <mach/task.h>
 # include <mach/semaphore.h>
+# include <TargetConditionals.h>
 # define UV_PLATFORM_SEM_T semaphore_t
 #endif
+
+#define UV_IO_PRIVATE_PLATFORM_FIELDS                                         \
+  int rcount;                                                                 \
+  int wcount;                                                                 \
 
 #define UV_PLATFORM_LOOP_FIELDS                                               \
   uv_thread_t cf_thread;                                                      \
@@ -38,9 +43,7 @@
   ngx_queue_t cf_signals;                                                     \
 
 #define UV_PLATFORM_FS_EVENT_FIELDS                                           \
-  ev_io event_watcher;                                                        \
-  int fflags;                                                                 \
-  int fd;                                                                     \
+  uv__io_t event_watcher;                                                     \
   char* realpath;                                                             \
   int realpath_len;                                                           \
   int cf_flags;                                                               \
@@ -52,5 +55,7 @@
 
 #define UV_STREAM_PRIVATE_PLATFORM_FIELDS                                     \
   void* select;                                                               \
+
+#define UV_HAVE_KQUEUE 1
 
 #endif /* UV_DARWIN_H */

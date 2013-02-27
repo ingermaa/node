@@ -28,11 +28,7 @@
 #include <ifaddrs.h>
 #include <net/if.h>
 
-#include <TargetConditionals.h>
-
-#if !TARGET_OS_IPHONE
-#include <CoreServices/CoreServices.h>
-#endif
+#include <CoreFoundation/CFRunLoop.h>
 
 #include <mach/mach.h>
 #include <mach/mach_time.h>
@@ -40,8 +36,6 @@
 #include <sys/resource.h>
 #include <sys/sysctl.h>
 #include <unistd.h>  /* sysconf */
-
-static char *process_title;
 
 /* Forward declarations */
 void uv__cf_loop_runner(void* arg);
@@ -58,6 +52,9 @@ struct uv__cf_loop_signal_s {
 int uv__platform_loop_init(uv_loop_t* loop, int default_loop) {
   CFRunLoopSourceContext ctx;
   int r;
+
+  if (uv__kqueue_init(loop))
+    return -1;
 
   loop->cf_loop = NULL;
   if ((r = uv_mutex_init(&loop->cf_mutex)))
@@ -177,32 +174,15 @@ void uv__cf_loop_signal(uv_loop_t* loop, cf_loop_signal_cb cb, void* arg) {
 }
 
 
-#if TARGET_OS_IPHONE
-/* see: http://developer.apple.com/library/mac/#qa/qa1398/_index.html */
-uint64_t uv_hrtime() {
-    uint64_t time;
-    uint64_t enano;
-    static mach_timebase_info_data_t sTimebaseInfo;
+uint64_t uv__hrtime(void) {
+    mach_timebase_info_data_t info;
 
-    time = mach_absolute_time();
+    if (mach_timebase_info(&info) != KERN_SUCCESS)
+      abort();
 
-    if (0 == sTimebaseInfo.denom) {
-        (void)mach_timebase_info(&sTimebaseInfo);
-    }
-
-    enano = time * sTimebaseInfo.numer / sTimebaseInfo.denom;
-
-    return enano;
+    return mach_absolute_time() * info.numer / info.denom;
 }
-#else
-uint64_t uv_hrtime() {
-  uint64_t time;
-  Nanoseconds enano;
-  time = mach_absolute_time(); 
-  enano = AbsoluteToNanoseconds(*(AbsoluteTime *)&time);
-  return (*(uint64_t *)&enano);
-}
-#endif
+
 
 int uv_exepath(char* buffer, size_t* size) {
   uint32_t usize;
@@ -269,31 +249,6 @@ void uv_loadavg(double avg[3]) {
   avg[0] = (double) info.ldavg[0] / info.fscale;
   avg[1] = (double) info.ldavg[1] / info.fscale;
   avg[2] = (double) info.ldavg[2] / info.fscale;
-}
-
-
-char** uv_setup_args(int argc, char** argv) {
-  process_title = argc ? strdup(argv[0]) : NULL;
-  return argv;
-}
-
-
-uv_err_t uv_set_process_title(const char* title) {
-  /* TODO implement me */
-  return uv__new_artificial_error(UV_ENOSYS);
-}
-
-
-uv_err_t uv_get_process_title(char* buffer, size_t size) {
-  if (process_title) {
-    strncpy(buffer, process_title, size);
-  } else {
-    if (size > 0) {
-      buffer[0] = '\0';
-    }
-  }
-
-  return uv_ok_;
 }
 
 

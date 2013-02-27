@@ -26,7 +26,7 @@ exports.testDir = path.dirname(__filename);
 exports.fixturesDir = path.join(exports.testDir, 'fixtures');
 exports.libDir = path.join(exports.testDir, '../lib');
 exports.tmpDir = path.join(exports.testDir, 'tmp');
-exports.PORT = 12346;
+exports.PORT = +process.env.NODE_COMMON_PORT || 12346;
 
 if (process.platform === 'win32') {
   exports.PIPE = '\\\\.\\pipe\\libuv-test';
@@ -59,6 +59,17 @@ exports.ddCommand = function(filename, kilobytes) {
            filename + '" ' + (kilobytes * 1024);
   } else {
     return 'dd if=/dev/zero of="' + filename + '" bs=1024 count=' + kilobytes;
+  }
+};
+
+
+exports.spawnCat = function(options) {
+  var spawn = require('child_process').spawn;
+
+  if (process.platform === 'win32') {
+    return spawn('more', [], options);
+  } else {
+    return spawn('cat', [], options);
   }
 };
 
@@ -108,6 +119,14 @@ process.on('exit', function() {
     knownGlobals.push(DTRACE_NET_SOCKET_READ);
     knownGlobals.push(DTRACE_NET_SOCKET_WRITE);
   }
+  if (global.COUNTER_NET_SERVER_CONNECTION) {
+    knownGlobals.push(COUNTER_NET_SERVER_CONNECTION);
+    knownGlobals.push(COUNTER_NET_SERVER_CONNECTION_CLOSE);
+    knownGlobals.push(COUNTER_HTTP_SERVER_REQUEST);
+    knownGlobals.push(COUNTER_HTTP_SERVER_RESPONSE);
+    knownGlobals.push(COUNTER_HTTP_CLIENT_REQUEST);
+    knownGlobals.push(COUNTER_HTTP_CLIENT_RESPONSE);
+  }
 
   if (global.ArrayBuffer) {
     knownGlobals.push(ArrayBuffer);
@@ -144,7 +163,9 @@ process.on('exit', function() {
 var mustCallChecks = [];
 
 
-function runCallChecks() {
+function runCallChecks(exitCode) {
+  if (exitCode !== 0) return;
+
   var failed = mustCallChecks.filter(function(context) {
     return context.actual !== context.expected;
   });
